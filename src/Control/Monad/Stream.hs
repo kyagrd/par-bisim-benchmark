@@ -24,7 +24,7 @@
 -- are interpreted as a multiset, i.e., a valid transformation
 -- according to the monad laws may change the order of the results.
 -- 
-module Control.Monad.Stream ( Stream, suspended, runStream, toList, parStream ) where
+module Control.Monad.Stream ( Stream, suspended, runStream, toList ) where
 
 import Control.Monad
 import Control.Parallel
@@ -42,27 +42,11 @@ import Prelude hiding (foldr)
 -- 
 data Stream a = Nil | Single a | Cons a (Stream a) | Susp (Stream a)
 
-parStream :: (a -> b) -> Stream a -> Eval (Stream b)
-parStream _ Nil = return Nil
-parStream f (Single a) = return $ Single (f a)
-parStream f (Cons a as) = do
-  b <- rpar (f a)
-  bs <- parStream f as
-  return $ Cons b bs
-parStream f (Susp as) = do
-  bs <- parStream f as
-  return $ Susp bs
-
 instance Functor Stream
  where
   fmap _ Nil         = Nil
   fmap f (Single x)  = Single (f x)
-  fmap f (Cons x xs) =
-    if False then runEval $ do
-      b <- rpar $ f x
-      bs <- rpar $ fmap f xs
-      return $ Cons b bs
-    else Cons (f x) (fmap f xs)
+  fmap f (Cons x xs) = Cons (f x) (fmap f xs)
   fmap f (Susp xs)   = Susp (fmap f xs)
 
 -- |
@@ -85,7 +69,7 @@ instance Monad Stream
 
   Nil       >>= _ = Nil
   Single x  >>= f = f x
-  Cons x xs >>= f = (f x `seq` ()) `par` f x `mplus` suspended (xs >>= f)
+  Cons x xs >>= f = f x `mplus` suspended (xs >>= f)
   Susp xs   >>= f = suspended (xs >>= f)
 
 instance MonadFail Stream where
