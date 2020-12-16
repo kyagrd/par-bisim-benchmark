@@ -26,6 +26,8 @@ dependencies:
 - deepseq
 - containers
 - MonadRandom
+- data-memocombinators
+- runmemo
 
 library:
   source-dirs: src
