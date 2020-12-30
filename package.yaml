@@ -28,6 +28,9 @@ dependencies:
 - MonadRandom
 - data-memocombinators
 - runmemo
+- unbound-generics
+- monad-par
+- mtl
 
 library:
   source-dirs: src
