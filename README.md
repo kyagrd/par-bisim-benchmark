@@ -1,1 +1,1 @@
-# stream-par-experiment
+# par-bisim-benchmark
