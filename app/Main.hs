@@ -1,6 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE DeriveDataTypeable, DeriveGeneric, MultiParamTypeClasses #-}
+{-# LANGUAGE StandaloneDeriving, DeriveDataTypeable, DeriveGeneric, MultiParamTypeClasses #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 module Main where
 
@@ -10,6 +9,7 @@ import Control.Exception
 import Control.Monad
 import Control.Monad.Stream ( Stream )
 import Control.Monad.Random
+import System.Random
 import Control.Monad.State
 import Control.Monad.Identity
 import Control.Parallel
@@ -18,78 +18,14 @@ import Data.List ( partition, union, sort, nub, (\\) )
 import Data.Tree ( Tree(Node) )
 import qualified Data.MemoCombinators as MC
 import Data.RunMemo
-
 import Unbound.Generics.LocallyNameless
 import Unbound.Generics.LocallyNameless.Bind
 import Control.Monad.Reader
 import Control.Monad.Random
 import GHC.Generics (Generic)
 import Data.Typeable (Typeable)
--- import Control.Monad.Par
 
-type Nm = Name Expr
-
-data Expr
-   = Var Nm
-   | Lam (Bind Nm Expr)
-   | App Expr Expr
-   deriving (Show, Generic, Typeable, Eq)
-
-instance (Typeable a, Alpha a, Eq a) => Eq (Bind (Name a) a) where
-   (==) = aeq
-
-instance Alpha Expr
-instance Subst Expr Expr where
-   isvar (Var x) = Just (SubstName x)
-   isvar _       = Nothing
-
-lam x = Lam . bind x
-
-_S = lam x . lam y . lam z $ App xz yz
-   where
-      x = s2n "x"
-      y = s2n "y"
-      z = s2n "z"
-      xz = Var x `App` Var z
-      yz = Var y `App` Var z
-_K = lam x . lam y $ Var x
-   where
-      x = s2n "x"
-      y = s2n "y"
-
-_K' = lam y . lam x $ Var y
-   where
-      x = s2n "x"
-      y = s2n "y"
-
-
-beta (App (Lam b) e2) = do (x,e) <- unbind b
-                           return $ subst x e2 e
-beta _                = empty
-
-redN e@(Var _)     = pure e
-redN (Lam b)       = do (x,e) <- unbind b
-                        lam x <$> redN e
-redN e@(App e1 e2) = beta e
-               <|>   App <$> redN e1 <*> pure e2
-               <|>   App <$> pure e1 <*> redN e2
-               <|>   pure e
-
-redP e@(Var _)     = pure e
-redP (Lam b)       = do (x,e) <- unbind b
-                        lam x <$> redP e
-redP e@(App e1 e2) = beta'  =<<  App <$> redP e1 <*> redP e2
-   where
-      beta' e = beta e <|> pure e
-
-
-
-reduceBy red e  = do e' <- red e
-                     if e == e'  then  return e  else  reduceBy red e'
-
-reduceN = reduceBy redN
-
-reduceP = reduceBy redP
+import qualified Control.Monad.Parallel as MP
 
 expr1 = bind x (Var x)
    where x = s2n "x" :: Nm
@@ -105,26 +41,47 @@ parFreshMT strat ms = do
    s <- FreshMT $ get
    return . runEval . parList strat $ map (`contFreshMT` s) ms
 
-roll n = sequence . replicate n
-
 main :: IO ()
 main = do
-   let n = 1024
-   g <- getStdGen
-   let xs = roll n (getRandomR (0,1::Int)) `evalRand` g
-   let e = appHalves n [if x==0 then _S else _K | x <- xs]
-   let (b,es) = head . runFreshMT $ do
+   let (b,es@[e1,e2]) = head . runFreshMT $ do
+               e1 <- reduceN $ exprFibo 9
+               e2 <- reduceP $ exprFibo 9
+               return (e1==e2, [e1,e2])
+   mapM_ print es
+   print b
+
+expr2 = foldl1 App [_minus, _nat 10, _nat 8]
+
+exprFibo x = App _fibo (_nat x)
+
+{-
+roll n = sequence . replicate n
+
+main = do
+   main' 3
+   return ()
+
+228
+
+main' n = do
+   let g = mkStdGen 217
+   let xs = roll n (getRandomR (0,9::Int)) `evalRand` g
+   let e = appHalves n $ [if x>3 then _S else _K | x <- xs]
+   let (b,es@[e1,e2]) = head . runFreshMT $ do
                   e1 <- reduceN e
                   e2 <- reduceP e
                   return (e1==e2, [e1,e2])
    mapM_ print es
-   print b
+   print n
+   return b
 
 appHalves 1 (e:_)= e
-appHalves n es = appHalves n' es1 `App` appHalves n' es2
+appHalves n es = appHalves n1 es1 `App` appHalves n2 es2
    where
-      n' = n `div` 2
-      (es1,es2) = splitAt n' es
+      n1 = n `div` 2
+      n2 = n - n1
+      (es1,es2) = splitAt n1 es
+-}
 
 -- main =  print . filter (/=Nothing) =<< mapM evaluate ( take 500000 (toList $ pythaTrip' =<< number3) `using` parList rseq )
 -- main = mapM_ evaluate ( take 11 (toList $ pythaTrip =<< number3) `using` parList rdeepseq )

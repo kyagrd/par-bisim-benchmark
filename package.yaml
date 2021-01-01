@@ -26,11 +26,16 @@ dependencies:
 - deepseq
 - containers
 - MonadRandom
+- random
 - data-memocombinators
 - runmemo
 - unbound-generics
 - monad-par
 - mtl
+- template-haskell
+- turtle
+- combinat
+- monad-parallel
 
 library:
   source-dirs: src
