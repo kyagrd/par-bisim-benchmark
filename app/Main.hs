@@ -4,6 +4,7 @@
 module Main where
 
 import Lib
+import Data.Maybe
 import Control.Applicative
 import Control.Exception
 import Control.Monad
@@ -14,7 +15,7 @@ import Control.Monad.State
 import Control.Monad.Identity
 import Control.Parallel
 import Control.Parallel.Strategies
-import Data.List ( partition, union, sort, nub, (\\) )
+import Data.List ( partition, union, sort, nub, (\\), isPrefixOf )
 import Data.Tree ( Tree(Node) )
 import qualified Data.MemoCombinators as MC
 import Data.RunMemo
@@ -30,29 +31,59 @@ import qualified Control.Monad.Parallel as MP
 expr1 = bind x (Var x)
    where x = s2n "x" :: Nm
 
-parFreshM strat ms = do
-   s <- FreshMT $ get
-   return . runEval . parList strat $ map (`contFreshM` s) ms
-
--- parFreshM strat ms = fmap runIdentity <$> parFreshMT (parTraversable strat) ms
-
-parFreshMT :: (Monad m1, Monad m2) => Strategy (m2 a) -> [FreshMT m2 a] -> FreshMT m1 [m2 a]
-parFreshMT strat ms = do
-   s <- FreshMT $ get
-   return . runEval . parList strat $ map (`contFreshMT` s) ms
-
 main :: IO ()
 main = do
-   let (b,es@[e1,e2]) = head . runFreshMT $ do
-               e1 <- reduceN $ exprFibo 9
-               e2 <- reduceP $ exprFibo 9
-               return (e1==e2, [e1,e2])
-   mapM_ print es
-   print b
+   let n = 32
+   -- let e = fromJust . runFreshMT . reduceN $ App _fibo(Lit n)
+   -- let e = fromJust . runFreshMT . reduceN $ App _fibo'(Lit n)
+   let e = fromJust . runFreshMT . reduceN $ App _fibo''(Lit n)
+
+   -- putStrLn . show . length . filter (isPrefixOf "1@0") . words . show $ e
+   -- putStrLn . head . words $ show e
+   print e
+   {-
+   let e1 = fromJust . runFreshMT $ reduceN (exprFibo n)
+   let e2 = ( fromJust . runFreshMT $ reduceP (exprFibo n) )
+   let (b,es) = e1 `par` e2 `par` (e1==e2, [e1,e2])
+   -}
+   {-
+   let (b,es@[e1,e2]) = fromJust . runFreshMT $ do
+               es@[e1,e2] <- forkFreshMT rpar fromJust
+                                 [ reduceN (exprFibo n)
+                                 , reduceP (exprFibo n)
+                                 ]
+               return (e1==e2,es)
+   -}
+   -- mapM_ (putStrLn . show . length . filter (isPrefixOf "1@0") . words . show ) es
+   -- mapM_ (putStrLn . head . words . show ) $  es
+   -- mapM_ print es
+   -- print b
 
 expr2 = foldl1 App [_minus, _nat 10, _nat 8]
 
-exprFibo x = App _fibo (_nat x)
+{- runFibo
+      25    26    27    28    29    30    31    32    33
+-N1   2.51  3.46  5.60  9.11  15.3  25.4  42.2  74
+ -}
+
+{- runParFibo
+      25    26    27    28    29    30    31    32    33
+-N1   1.99  3.24  5.42  9.16  14.63 24.3  40.9  73
+-N2   1.70  2.78  4.55  7.40  11.86 20.4  33.7  58
+-}
+
+runParFibo 0 = reduceN $ App _fibo (Lit 0)
+runParFibo 1 = reduceN $ App _fibo (Lit 1)
+runParFibo x = do
+   [e1,e2] <- forkFreshMT rpar fromJust
+                  [ reduceN $ App _fibo (Lit (x-1))
+                  , reduceN $ App _fibo (Lit (x-2))
+                  ]
+   {-
+   e1 <- reduceN $ App _fibo (Lit (x-1))
+   e2 <- reduceN $ App _fibo (Lit (x-2))
+   -}
+   reduceN $ Add e1 e2
 
 {-
 roll n = sequence . replicate n

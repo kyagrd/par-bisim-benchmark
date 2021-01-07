@@ -5,34 +5,27 @@
 -- {-# LANGUAGE CPP #-}
 
 module Lib where
-import Language.Haskell.TH hiding (Name)
 import Control.Applicative
-import Turtle
-import Data.List
-import System.IO.Unsafe
-
-import qualified Data.MemoCombinators as MC
-import Data.RunMemo
-
+import Control.Monad.Identity
+import Control.Monad.State
 import Control.Parallel
 import Control.Parallel.Strategies
-
-import Math.Combinat.Compositions
-
 import Unbound.Generics.LocallyNameless
-import Unbound.Generics.LocallyNameless.Bind
 import Unbound.Generics.LocallyNameless.Unsafe
-import Control.Monad.Reader
-import Control.Monad.Random
 import GHC.Generics (Generic)
 import Data.Typeable (Typeable)
+import Data.Maybe
 
 type Nm = Name Expr
 
 data Expr
    = Var Nm
+   | Lit Integer
    | Lam (Bind Nm Expr)
    | App Expr Expr
+   | Add Expr Expr
+   | AddP Expr Expr
+   | If Expr Expr Expr
    deriving (Show, Generic, Typeable, Eq)
 
 instance (Typeable a, Alpha a, Eq a) => Eq (Bind (Name a) a) where
@@ -62,7 +55,9 @@ beta (App (Lam b) e2) = do (x,e) <- unbind b
                            return $ subst x e2 e
 beta _                = empty
 
-redN intoLam e@(Var _) = pure e
+redN :: Bool -> Expr -> FreshMT Maybe Expr
+redN _       e@(Var _) = pure e
+redN _       e@(Lit _) = pure e
 redN intoLam e@(Lam b)
     | intoLam  = do (x,e1) <- unbind b
                     lam x <$> red e1
@@ -77,60 +72,71 @@ redN intoLam e@(App e1 e2)
     where
         eval = redN False
         red  = redN intoLam
+redN intoLam e@(Add e1 e2) = do
+    e1' <- red e1
+    e2' <- red e2
+    case (e1',e2') of
+        (Lit n1, Lit n2) -> pure $ Lit (n1 + n2)
+        _                -> pure $ Add e1' e2'
+    where
+        red  = redN intoLam
+redN intoLam e@(AddP e1 e2) = do
+    [e1',e2'] <- forkFreshMT rpar fromJust [red e1, red e2]
+    case (e1',e2') of
+        (Lit n1, Lit n2) -> pure $ Lit (n1 + n2)
+        _                -> pure $ Add e1' e2'
+    where
+        red  = redN intoLam
+redN intoLam e@(If eb e1 e0) = do
+    eb' <- red eb
+    case eb' of Lit 0 -> red e0
+                Lit _ -> red e1
+                _     -> pure $ If eb' e1 e0
+    where
+        eval = redN False
+        red  = redN intoLam
 
 reduceN = redN True
 
-redP intoLam e@(Var _) = pure e
-redP intoLam e@(Lam b)
-    | intoLam  = do (x,e1) <- unbind b
-                    lam x <$> red e1
-    | otherwise = pure e
-    where
-        red = redP intoLam
-redP intoLam e@(App e1@(App _ _) e2) =
-    App <$> eval e1 <*> pure e2  >>= red
-    where
-        eval = redN False
-        red  = redN intoLam
-redP intoLam e@(App e1 e2)
-    | isLam  e1  = beta e  >>= red
-    | hasRed e1  = App <$> eval e1 <*> pure e2  >>= red
-    | hasRed e2  = App <$> pure e1 <*> red  e2
-    | otherwise  = pure e
-    where
-        eval = redN False
-        red  = redN intoLam
+forkFreshMT :: (Monad m1, Monad m2) => Strategy b -> (m1 a -> b) -> [FreshMT m1 a] -> FreshMT m2 [b]
+forkFreshMT strat runm ms = splitFreshMT strat runm $ zip (repeat 0) ms
 
-reduceP = redP True
+splitFreshMT :: (Monad m1, Monad m2) => Strategy b -> (m1 a -> b) -> [(Integer, FreshMT m1 a)] -> FreshMT m2 [b]
+splitFreshMT strat runm ps = do
+   s <- FreshMT $ get
+   let ss = scanl (+) s ks
+       ps' = zip ss ms
+   FreshMT $ modify (+ last ss)
+   return . runEval $ parList strat [runm $ contFreshMT m s' | (s',m) <-ps']
+   where (ks,ms) = unzip ps
+
+forkFreshM strat = forkFreshMT strat runIdentity
+
+splitFreshM strat = splitFreshMT strat runIdentity
 
 {-
-redP intoLam e@(Var _) = pure e
-redP intoLam e@(Lam b)
-    | intoLam  = do (x,e1) <- unbind b
-                    lam x <$> red e1
-    | otherwise = pure e
-    where
-        red = redP intoLam
-redP intoLam e@(App e1 e2) = App <$> eval e1 <*> red e2  >>= red'
-   where
-       red e    | hasRed e   = redP intoLam e
-                | otherwise  = pure e
-       eval e   | hasRed e   = redP False   e
-                | otherwise  = pure e
-       red' e'@(App e1' e2')
-            | isLam  e1'  = beta e' >>= red
-            | hasRed e1'  = App <$> red e1' <*> pure e2'
-            | otherwise   = pure e'
+parFreshM strat ms = do
+   s <- FreshMT $ get
+   return . runEval . parList strat $ map (`contFreshM` s) ms
 
-reduceP = redP True
+-- parFreshM strat ms = fmap runIdentity <$> parFreshMT (parTraversable strat) ms
+
+parFreshMT :: (Monad m1, Monad m2) => Strategy (m2 a) -> [FreshMT m2 a] -> FreshMT m1 [m2 a]
+parFreshMT strat ms = do
+   s <- FreshMT $ get
+   return . runEval . parList strat $ map (`contFreshMT` s) ms
 -}
 
 isLam (Lam _) = True
 isLam _       = False
 
 hasRed (Var _)     = False
+hasRed (Lit _)     = False
 hasRed (Lam b)     = hasRed . snd $ unsafeUnbind b
 hasRed (App e1 e2) = isLam e1 || hasRed e1 || hasRed e2
+hasRed (Add _ _)   = True
+hasRed (AddP _ _)  = True
+hasRed (If _ _ _)  = True
 
 
 _nat n = lam f . lam x . foldr App _x $ replicate n _f
@@ -203,15 +209,44 @@ _Y = lam f $ App _f_xx _f_xx
         x = s2n "x";_x = Var x
         f = s2n "f";_f = Var f
 
+_fibo'' = lam n $
+            If _n
+                (If _n_1
+                    (AddP (App _fibo' _n_1) (App _fibo' _n_2))
+                    (Lit 1)
+                )
+                (Lit 1)
+    where
+        _n_1 = Add _n (Lit(-1))
+        _n_2 = Add _n (Lit(-2))
+        f = s2n "f";_f = Var f
+        n = s2n "n";_n = Var n
+
+
+
+_fibo' = lam n $
+            If _n
+                (If _n_1
+                    (AddP (App _fibo _n_1) (App _fibo _n_2))
+                    (Lit 1)
+                )
+                (Lit 1)
+    where
+        _n_1 = Add _n (Lit(-1))
+        _n_2 = Add _n (Lit(-2))
+        f = s2n "f";_f = Var f
+        n = s2n "n";_n = Var n
 
 _fibo = App _Y $ lam f . lam n $
-            foldl1 App  [ App _is0 _n_1
-                        , _nat 1                                       -- when true
-                        , foldl1 App [_plus, App _f _n_1, App _f _n_2] -- when false
-                        ]
+            If _n
+                (If _n_1
+                    (Add (App _f _n_1) (App _f _n_2))
+                    (Lit 1)
+                )
+                (Lit 1)
     where
-        _n_1 = App _pred _n
-        _n_2 = App _pred $ _n_1
+        _n_1 = Add _n (Lit(-1))
+        _n_2 = Add _n (Lit(-2))
         f = s2n "f";_f = Var f
         n = s2n "n";_n = Var n
 
